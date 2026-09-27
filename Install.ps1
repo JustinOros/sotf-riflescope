@@ -117,7 +117,6 @@ try {
     Write-Host 'Start Sons of the Forest, then:'
     Write-Host '  1. Check that MODS appears on the main menu and lists RifleScope'
     Write-Host '  2. Load into a game, equip the rifle and aim down the scope'
-    Write-Host '  3. Press F1 and type scopezoom to see or change the zoom'
     Write-Host ''
 }
 catch {
@@ -129,4 +128,3 @@ catch {
     Write-Host ''
 }
 
-Read-Host 'Press Enter to close' | Out-Null
