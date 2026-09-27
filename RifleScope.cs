@@ -43,6 +43,8 @@ public class RifleScope : SonsMod
     private static float _trimCm = DefaultTrimCm;
     private static float _windCm;
     private static bool _debug;
+    private static bool _enabled = true;
+    private static readonly List<(Renderer Renderer, int Slot, Material Original)> RedDotSlots = new();
     private static string _configPath;
 
     private static RifleAnimatorController _rifle;
@@ -99,6 +101,9 @@ public class RifleScope : SonsMod
 
     private static void Tick()
     {
+        if (!_enabled)
+            return;
+
         if (!_rifle || !_rifle.gameObject.activeInHierarchy)
         {
             _rifle = null;
@@ -269,12 +274,41 @@ public class RifleScope : SonsMod
                 var mat = mats[i];
                 if (!mat || HiddenIds.Contains(mat.GetInstanceID()) || !mat.shader || mat.shader.name != RedDotShader)
                     continue;
+                RedDotSlots.Add((renderer, i, mat));
                 mats[i] = HiddenFor(mat);
                 changed = true;
             }
             if (changed)
                 renderer.sharedMaterials = mats;
         }
+    }
+
+    private static void RestoreRedDot()
+    {
+        foreach (var (renderer, slot, original) in RedDotSlots)
+        {
+            if (!renderer || !original)
+                continue;
+            var mats = renderer.sharedMaterials;
+            if (slot >= mats.Length || !mats[slot] || !HiddenIds.Contains(mats[slot].GetInstanceID()))
+                continue;
+            mats[slot] = original;
+            renderer.sharedMaterials = mats;
+        }
+        RedDotSlots.Clear();
+    }
+
+    private static void Disable()
+    {
+        SetZoomed(false, null);
+        if (_rifle)
+        {
+            var settings = _rifle._fovChangeSettings;
+            if (settings != null && OriginalOffsets.TryGetValue(settings.Pointer, out var original))
+                settings._FieldOfViewTargetOffset_k__BackingField = original;
+        }
+        RestoreRedDot();
+        _rifle = null;
     }
 
     private static Material HiddenFor(Material original)
@@ -634,6 +668,26 @@ public class RifleScope : SonsMod
         return tex;
     }
 
+    [DebugCommand("scope")]
+    private static void ScopeCommand(string args)
+    {
+        args = (args ?? string.Empty).Trim().ToLowerInvariant();
+
+        if (args == "on" || args == "off")
+        {
+            _enabled = args == "on";
+            Save();
+            if (_enabled)
+                _rifle = null;
+            else
+                Disable();
+            Say($"RifleScope {(_enabled ? "on" : "off")}");
+            return;
+        }
+
+        Say($"RifleScope is {(_enabled ? "on" : "off")}. Usage: scope on or scope off");
+    }
+
     [DebugCommand("scopezoom")]
     private static void ScopeZoomCommand(string args)
     {
@@ -734,6 +788,8 @@ public class RifleScope : SonsMod
                 _trimCm = trim;
             if (parts.Length > 2 && float.TryParse(parts[2], NumberStyles.Float, Inv, out var wind) && wind >= -MaxWindCm && wind <= MaxWindCm)
                 _windCm = wind;
+            if (parts.Length > 3)
+                _enabled = parts[3] != "0";
         }
         catch (Exception e)
         {
@@ -745,7 +801,7 @@ public class RifleScope : SonsMod
     {
         try
         {
-            File.WriteAllText(_configPath, $"{_zoom.ToString(Inv)} {_trimCm.ToString(Inv)} {_windCm.ToString(Inv)}");
+            File.WriteAllText(_configPath, $"{_zoom.ToString(Inv)} {_trimCm.ToString(Inv)} {_windCm.ToString(Inv)} {(_enabled ? "1" : "0")}");
         }
         catch (Exception e)
         {
