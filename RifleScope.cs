@@ -23,6 +23,7 @@ public class RifleScope : SonsMod
     private const float DefaultTrimCm = 50f;
     private const float MaxTrimCm = 200f;
     private const float MaxWindCm = 200f;
+    private const float TrimReferenceRange = 50f;
     private const int MilDotCount = 10;
     private const float MilDotSize = 0.4f;
     private const float MinDotPx = 7f;
@@ -196,8 +197,9 @@ public class RifleScope : SonsMod
         }
 
         CenterPoint(cam, out var point);
-        point -= cam.transform.up * (_trimCm * 0.01f);
-        point += cam.transform.right * (_windCm * 0.01f);
+        var scale = Vector3.Distance(cam.transform.position, point) / TrimReferenceRange;
+        point -= cam.transform.up * (_trimCm * 0.01f * scale);
+        point += cam.transform.right * (_windCm * 0.01f * scale);
         var dir = point - _projectile.position;
         if (dir.sqrMagnitude < 0.0001f)
             return;

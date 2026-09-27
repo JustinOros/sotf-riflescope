@@ -75,6 +75,9 @@ Press F1 to open the console, then use these commands:
 | `scopewind 20` | Set the windage, -200 to 200. Positive moves hits right, negative moves hits left. The default is 0 |
 | `scopedebug` | Toggle a debug readout above the range |
 
+Trim and windage are angle adjustments, so a setting that is right at one range
+stays right at every range.
+
 The zoom, trim and windage are saved to `UserData\RifleScope.txt` in your game
 folder. Setting the zoom to 1 keeps vanilla zoom and the normal scope view,
 without the red dot.
