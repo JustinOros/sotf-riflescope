@@ -2,8 +2,11 @@
 
 A stronger rifle scope for Sons of the Forest. Aiming down the rifle scope zooms
 5x further than the vanilla scope and shows a full screen scope view with a
-crosshair reticle, mil dots and a rangefinder instead of the red dot. You can
-also put the pistol suppressor on the rifle for quiet, suppressed shots.
+crosshair reticle, mil dots and a rangefinder instead of the red dot.
+
+Want a suppressed rifle too? Install
+[RifleSuppressor](https://github.com/JustinOros/sotf-riflesuppressor). It used to
+be part of this mod and is now its own mod, so you can use either one or both.
 
 ## Multiplayer
 
@@ -69,7 +72,7 @@ Press F1 to open the console, then use these commands:
 | Command | Action |
 | --- | --- |
 | `scope` | Show whether the scope is on or off |
-| `scope off` | Go back to the vanilla scope. The suppressor is not affected |
+| `scope off` | Go back to the vanilla scope |
 | `scope on` | Turn the scope back on |
 | `scopezoom` | Show the current zoom |
 | `scopezoom 5` | Set the zoom as a multiple of the vanilla scope, 1 to 50. The default is 5 |
@@ -77,22 +80,12 @@ Press F1 to open the console, then use these commands:
 | `scopetrim 60` | Set the vertical trim, -200 to 200. Positive moves hits down, negative moves hits up. The default is 60 |
 | `scopewind` | Show the current windage |
 | `scopewind 20` | Set the windage, -200 to 200. Positive moves hits right, negative moves hits left. The default is 0 |
-| `suppressor` | Show whether the rifle suppressor is on or off |
-| `suppressor on` | Put the suppressor on the rifle |
-| `suppressor off` | Take the suppressor off the rifle |
 | `scopedebug` | Toggle a debug readout above the range |
-
-### Suppressor
-
-Run `suppressor on` to put the pistol suppressor on the end of the rifle barrel.
-Rifle shots then use the suppressed pistol shot sound. It stays on until you run
-`suppressor off`, even after restarting the game. You do not need a suppressor in
-your inventory.
 
 Trim and windage are angle adjustments, so a setting that is right at one range
 stays right at every range.
 
-The on or off setting, suppressor, zoom, trim and windage are saved to `UserData\RifleScope.txt` in your game
+The on or off setting, zoom, trim and windage are saved to `UserData\RifleScope.txt` in your game
 folder. Setting the zoom to 1 keeps vanilla zoom and the normal scope view,
 without the red dot.
 
