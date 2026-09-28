@@ -66,7 +66,8 @@ public class RifleScope : SonsMod
     private static string _configPath;
 
     private static RifleAnimatorController _rifle;
-    private static float _nextSearch;
+    private static RifleAnimatorController _pendingRifle;
+    private static WeaponMod _suppressorMod;
     private static float _hipFov;
     private static float _vanillaAimFov = 35f;
     private static float _targetAimFov;
@@ -94,6 +95,7 @@ public class RifleScope : SonsMod
     public RifleScope()
     {
         OnUpdateCallback = OnUpdate;
+        HarmonyPatchAll = true;
     }
 
     protected override void OnSdkInitialized()
@@ -121,13 +123,17 @@ public class RifleScope : SonsMod
     {
         if (!_rifle || !_rifle.gameObject.activeInHierarchy)
         {
-            _rifle = null;
-            SetZoomed(false, null);
-            if (Time.unscaledTime < _nextSearch)
+            if (_rifle || _hiddenCam)
+            {
+                _rifle = null;
+                SetZoomed(false, null);
+            }
+
+            var pending = _pendingRifle;
+            _pendingRifle = null;
+            if (!pending || !pending.gameObject.activeInHierarchy)
                 return;
-            _nextSearch = Time.unscaledTime + 0.5f;
-            if (!FindRifle())
-                return;
+            AdoptRifle(pending);
         }
 
         if (!_enabled)
@@ -147,34 +153,41 @@ public class RifleScope : SonsMod
         SetZoomed(zoomed, cam);
     }
 
-    private static bool FindRifle()
+    internal static void OnWeaponTick(RangedWeaponController controller)
     {
-        foreach (var rifle in UnityEngine.Object.FindObjectsOfType<RifleAnimatorController>())
+        if (!controller || (_rifle && _rifle.Pointer == controller.Pointer))
+            return;
+        var rifle = controller.TryCast<RifleAnimatorController>();
+        if (rifle && rifle.IsLocalPlayer())
+            _pendingRifle = rifle;
+    }
+
+    private static void AdoptRifle(RifleAnimatorController rifle)
+    {
+        _rifle = rifle;
+        _projectile = FindProjectileTransform(rifle);
+        _originalFireEvent ??= rifle._gunShotAudioEvent;
+        if (_enabled)
         {
-            if (!rifle || !rifle.gameObject.activeInHierarchy || !rifle.IsLocalPlayer())
-                continue;
-            _rifle = rifle;
-            _projectile = FindProjectileTransform(rifle);
-            _originalFireEvent ??= rifle._gunShotAudioEvent;
-            if (_enabled)
-            {
-                if (!_overlay)
-                    CreateOverlay();
-                HideRedDot(rifle);
-            }
-            if (_suppressor)
-                SetSuppressor(rifle, true);
-            return true;
+            if (!_overlay)
+                CreateOverlay();
+            HideRedDot(rifle);
         }
-        return false;
+        if (_suppressor)
+            SetSuppressor(rifle, true);
     }
 
     private static WeaponMod FindSuppressorMod()
     {
+        if (_suppressorMod)
+            return _suppressorMod;
         foreach (var mod in Resources.FindObjectsOfTypeAll<WeaponMod>())
         {
             if (mod && mod.name == SuppressorModName)
+            {
+                _suppressorMod = mod;
                 return mod;
+            }
         }
         return null;
     }
@@ -223,8 +236,30 @@ public class RifleScope : SonsMod
 
     private static Type FindGameType(string name)
     {
-        foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+        var assemblies = AppDomain.CurrentDomain.GetAssemblies();
+        foreach (var asm in assemblies)
         {
+            try
+            {
+                var t = asm.GetType(name, false) ?? asm.GetType("Il2Cpp." + name, false);
+                if (t != null)
+                    return t;
+            }
+            catch
+            {
+            }
+        }
+
+        foreach (var asm in assemblies)
+        {
+            var asmName = asm.GetName().Name ?? string.Empty;
+            if (asm.IsDynamic || asmName.StartsWith("System", StringComparison.OrdinalIgnoreCase) ||
+                asmName.StartsWith("Unity", StringComparison.OrdinalIgnoreCase) ||
+                asmName.StartsWith("Il2Cppmscorlib", StringComparison.OrdinalIgnoreCase) ||
+                asmName.StartsWith("Microsoft", StringComparison.OrdinalIgnoreCase) ||
+                asmName.StartsWith("mscorlib", StringComparison.OrdinalIgnoreCase))
+                continue;
+
             Type[] types;
             try
             {
@@ -1103,6 +1138,21 @@ public class RifleScope : SonsMod
         catch (Exception e)
         {
             RLog.Error($"RifleScope could not write config: {e.Message}");
+        }
+    }
+}
+
+[HarmonyPatch(typeof(RangedWeaponController), nameof(RangedWeaponController.CheckFireInput))]
+internal static class CheckFireInputPatch
+{
+    private static void Postfix(RangedWeaponController __instance)
+    {
+        try
+        {
+            global::RifleScope.RifleScope.OnWeaponTick(__instance);
+        }
+        catch
+        {
         }
     }
 }
