@@ -1,5 +1,7 @@
 # Rifle Scope
 
+[![Downloads](https://img.shields.io/github/downloads/JustinOros/sotf-riflescope/total?label=downloads)](https://github.com/JustinOros/sotf-riflescope/releases) [![Latest](https://img.shields.io/github/v/release/JustinOros/sotf-riflescope?label=latest)](https://github.com/JustinOros/sotf-riflescope/releases/latest)
+
 A stronger rifle scope for Sons of the Forest. Aiming down the rifle scope zooms
 5x further than the vanilla scope and shows a full screen scope view with a
 crosshair reticle, mil dots and a rangefinder instead of the red dot.
