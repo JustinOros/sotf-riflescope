@@ -64,6 +64,9 @@ public class RifleScope : SonsMod
     private static bool _nightVision;
     private static GameObject _nvObject;
     private static bool _nvFailed;
+    private static int _playerLayer = -1;
+    private static readonly List<(Renderer Renderer, ShadowCastingMode Mode)> HiddenBody = new();
+    private static float _logNearAt = -1f;
     private static string _originalFireEvent;
     private static HarmonyLib.Harmony _audioHarmony;
     private static bool _loggedParamError;
@@ -667,6 +670,7 @@ public class RifleScope : SonsMod
             {
                 cam.cullingMask &= ~(1 << _heldLayer);
                 _hiddenCam = cam;
+                HideBody();
             }
 
             if (Input.GetKeyDown(NightVisionKey))
@@ -675,6 +679,9 @@ public class RifleScope : SonsMod
                 Say($"Night vision {(_nightVision ? "on" : "off")}");
             }
             SetNightVision(_nightVision);
+
+            if (_debug)
+                LogReloadRenderers(cam);
 
             SteerShot(cam);
             ShowOverlay(true, Range(cam), _debug ? DebugLine(cam) : null, _targetAimFov > 0f ? _targetAimFov : cam.fieldOfView);
@@ -777,6 +784,71 @@ public class RifleScope : SonsMod
         if (_hiddenCam)
             _hiddenCam.cullingMask |= 1 << _heldLayer;
         _hiddenCam = null;
+        RestoreBody();
+    }
+
+    private static void LogReloadRenderers(Camera cam)
+    {
+        if (Input.GetMouseButtonDown(0))
+            _logNearAt = Time.unscaledTime + 0.35f;
+        if (_logNearAt < 0f || Time.unscaledTime < _logNearAt)
+            return;
+        _logNearAt = -1f;
+
+        var camPos = cam.transform.position;
+        var lines = new List<string>();
+        foreach (var r in UnityEngine.Object.FindObjectsOfType<Renderer>())
+        {
+            if (!r || !r.enabled || !r.isVisible || r.forceRenderingOff)
+                continue;
+            var d = Vector3.Distance(camPos, r.bounds.center);
+            if (d > 3f)
+                continue;
+            var path = r.transform.name;
+            for (var t = r.transform.parent; t; t = t.parent)
+                path = t.name + "/" + path;
+            lines.Add($"{d:0.00} m layer={LayerMask.LayerToName(r.gameObject.layer)} shadow={r.shadowCastingMode} {path}");
+        }
+        RLog.Msg($"RifleScope bolt renderers near camera ({lines.Count}):\n" + string.Join("\n", lines));
+    }
+
+    private static void HideBody()
+    {
+        RestoreBody();
+        if (!_rifle)
+            return;
+
+        if (_playerLayer < 0)
+        {
+            _playerLayer = LayerMask.NameToLayer("Player");
+            if (_playerLayer < 0)
+                return;
+        }
+
+        foreach (var r in _rifle.transform.root.GetComponentsInChildren<Renderer>(false))
+        {
+            if (!r || !r.enabled || r.forceRenderingOff || r.gameObject.layer != _playerLayer || r.shadowCastingMode == ShadowCastingMode.ShadowsOnly)
+                continue;
+            HiddenBody.Add((r, r.shadowCastingMode));
+            if (r.shadowCastingMode == ShadowCastingMode.Off)
+                r.forceRenderingOff = true;
+            else
+                r.shadowCastingMode = ShadowCastingMode.ShadowsOnly;
+        }
+    }
+
+    private static void RestoreBody()
+    {
+        foreach (var (r, mode) in HiddenBody)
+        {
+            if (!r)
+                continue;
+            if (mode == ShadowCastingMode.Off)
+                r.forceRenderingOff = false;
+            else
+                r.shadowCastingMode = mode;
+        }
+        HiddenBody.Clear();
     }
 
     private static void ShowOverlay(bool show, float range, string debug, float fov)
