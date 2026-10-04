@@ -17,6 +17,8 @@ using SonsSdk.Attributes;
 using TheForest.Utils;
 using TMPro;
 using UnityEngine;
+using UnityEngine.Rendering;
+using UnityEngine.Rendering.HighDefinition;
 using UnityEngine.UI;
 
 namespace RifleScope;
@@ -30,6 +32,13 @@ public class RifleScope : SonsMod
     private const float MaxTrimCm = 200f;
     private const float MaxWindCm = 200f;
     private const float TrimReferenceRange = 50f;
+    private const KeyCode NightVisionKey = KeyCode.N;
+    private const string SuppressorModName = "CompactPistolSuppressorMod";
+    private const string SuppressedFireEvent = "event:/SotF Events/player sounds/Weapons/PistolTactical/PistolTacticalFire";
+    private const string MuzzleName = "RifleScopeMuzzle";
+    private const string RifleFireEvent = "event:/SotF Events/player sounds/Weapons/Rifle/rifle_fire";
+    private const string UpgradeParameter = "upgrade";
+    private const float SuppressedUpgradeValue = 0.2f;
     private const int MilDotCount = 10;
     private const float MilDotSize = 0.4f;
     private const float MinDotPx = 7f;
@@ -50,11 +59,21 @@ public class RifleScope : SonsMod
     private static float _windCm;
     private static bool _debug;
     private static bool _enabled = true;
+    private static bool _suppressor;
+    private static bool _nightVision;
+    private static GameObject _nvObject;
+    private static bool _nvFailed;
+    private static string _originalFireEvent;
+    private static HarmonyLib.Harmony _audioHarmony;
+    private static bool _loggedParamError;
+    private static bool _loggedPistolParams;
+    private static bool _reissuing;
     private static readonly List<(Renderer Renderer, int Slot, Material Original)> RedDotSlots = new();
     private static string _configPath;
 
     private static RifleAnimatorController _rifle;
     private static RifleAnimatorController _pendingRifle;
+    private static ScriptableObject _suppressorMod;
     private static float _hipFov;
     private static float _vanillaAimFov = 35f;
     private static float _targetAimFov;
@@ -153,12 +172,296 @@ public class RifleScope : SonsMod
     {
         _rifle = rifle;
         _projectile = FindProjectileTransform(rifle);
+        _originalFireEvent ??= rifle._gunShotAudioEvent;
         if (_enabled)
         {
             if (!_overlay)
                 CreateOverlay();
             HideRedDot(rifle);
         }
+        if (_suppressor)
+            SetSuppressor(rifle, true);
+    }
+
+    private static WeaponMod FindSuppressorMod()
+    {
+        if (_suppressorMod)
+            return _suppressorMod.TryCast<WeaponMod>();
+        foreach (var mod in Resources.FindObjectsOfTypeAll<WeaponMod>())
+        {
+            if (mod && mod.name == SuppressorModName)
+            {
+                _suppressorMod = mod;
+                return mod;
+            }
+        }
+        return null;
+    }
+
+    private static Transform FindChild(Transform root, string name)
+    {
+        foreach (var t in root.GetComponentsInChildren<Transform>(true))
+        {
+            if (t.name == name)
+                return t;
+        }
+        return null;
+    }
+
+    private static bool EnsureMuzzleSlot(RangedWeaponController rifle, WeaponMods mods)
+    {
+        var links = mods._modLocations;
+        for (var i = 0; i < links.Count; i++)
+        {
+            if (links[i].Slot == WeaponMod.Slot.Muzzle)
+                return true;
+        }
+
+        var anchor = FindChild(rifle.transform, "ProjectileVisualTransform");
+        if (!anchor)
+            return false;
+
+        var muzzle = FindChild(anchor.parent, MuzzleName);
+        if (!muzzle)
+        {
+            var go = new GameObject(MuzzleName);
+            go.layer = anchor.gameObject.layer;
+            muzzle = go.transform;
+            muzzle.SetParent(anchor.parent, false);
+            muzzle.localPosition = anchor.localPosition;
+            muzzle.localRotation = Quaternion.identity;
+            muzzle.localScale = Vector3.one;
+        }
+
+        var link = new WeaponMods.ModLink();
+        link.Slot = WeaponMod.Slot.Muzzle;
+        link.Location = muzzle;
+        links.Add(link);
+        return true;
+    }
+
+    private static Type FindGameType(string name)
+    {
+        var assemblies = AppDomain.CurrentDomain.GetAssemblies();
+        foreach (var asm in assemblies)
+        {
+            try
+            {
+                var t = asm.GetType(name, false) ?? asm.GetType("Il2Cpp." + name, false);
+                if (t != null)
+                    return t;
+            }
+            catch
+            {
+            }
+        }
+
+        foreach (var asm in assemblies)
+        {
+            var asmName = asm.GetName().Name ?? string.Empty;
+            if (asm.IsDynamic || asmName.StartsWith("System", StringComparison.OrdinalIgnoreCase) ||
+                asmName.StartsWith("Unity", StringComparison.OrdinalIgnoreCase) ||
+                asmName.StartsWith("Il2Cppmscorlib", StringComparison.OrdinalIgnoreCase) ||
+                asmName.StartsWith("Microsoft", StringComparison.OrdinalIgnoreCase) ||
+                asmName.StartsWith("mscorlib", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            Type[] types;
+            try
+            {
+                types = asm.GetTypes();
+            }
+            catch (ReflectionTypeLoadException e)
+            {
+                types = e.Types.Where(t => t != null).ToArray();
+            }
+            catch
+            {
+                continue;
+            }
+
+            foreach (var t in types)
+            {
+                if (t != null && t.Name == name)
+                    return t;
+            }
+        }
+        return null;
+    }
+
+    private static void InstallAudioPatches()
+    {
+        if (_audioHarmony != null)
+            return;
+        _audioHarmony = new HarmonyLib.Harmony("RifleScope.SuppressorAudio");
+
+        var handler = FindGameType("FMOD_AnimationEventHandler");
+        var animPrefix = new HarmonyMethod(typeof(RifleScope).GetMethod(nameof(AnimEventPrefix), BindingFlags.NonPublic | BindingFlags.Static));
+        var count = 0;
+        if (handler != null)
+        {
+            foreach (var m in handler.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly))
+            {
+                var ps = m.GetParameters();
+                if (m.Name != "playFMODEvent" || ps.Length == 0 || ps[0].ParameterType != typeof(string))
+                    continue;
+                _audioHarmony.Patch(m, prefix: animPrefix);
+                count++;
+            }
+        }
+
+        var common = FindGameType("FMODCommon");
+        var oneshotPrefix = new HarmonyMethod(typeof(RifleScope).GetMethod(nameof(OneshotPrefix), BindingFlags.NonPublic | BindingFlags.Static));
+        if (common != null)
+        {
+            foreach (var m in common.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.DeclaredOnly))
+            {
+                var ps = m.GetParameters();
+                if (m.Name != "PlayOneshotInternal" || ps.Length < 4 || ps[0].ParameterType != typeof(string))
+                    continue;
+                _audioHarmony.Patch(m, prefix: oneshotPrefix);
+                count++;
+            }
+        }
+
+        RLog.Msg($"Suppressor audio: patched {count} methods (handler={(handler != null)}, common={(common != null)})");
+    }
+
+    private static bool RifleSuppressedNow() =>
+        _suppressor && _rifle && _rifle.gameObject.activeInHierarchy;
+
+    private static bool AnimEventPrefix(Component __instance, object[] __args)
+    {
+        try
+        {
+            if (!RifleSuppressedNow() || __args == null || __args.Length == 0 || __args[0] as string != RifleFireEvent)
+                return true;
+            if (!__instance || __instance.transform.root != _rifle.transform.root)
+                return true;
+            return false;
+        }
+        catch
+        {
+            return true;
+        }
+    }
+
+    private static bool OneshotPrefix(MethodBase __originalMethod, object[] __args)
+    {
+        if (_reissuing)
+            return true;
+
+        try
+        {
+            if (__args == null || __args.Length < 4 || __args[0] as string != SuppressedFireEvent)
+                return true;
+
+            var existing = __args[3] as Il2CppReferenceArray<Il2CppSystem.Object>;
+
+            if (!RifleSuppressedNow())
+            {
+                if (!_loggedPistolParams && existing != null && existing.Length > 0)
+                {
+                    _loggedPistolParams = true;
+                    RLog.Msg($"Suppressor audio: pistol params [{string.Join(", ", existing.Select(Describe))}]");
+                }
+                return true;
+            }
+
+            var oldCount = existing?.Length ?? 0;
+            for (var i = 0; i < oldCount; i++)
+            {
+                if (existing[i] != null && existing[i].ToString() == UpgradeParameter)
+                    return true;
+            }
+
+            var array = new Il2CppReferenceArray<Il2CppSystem.Object>(oldCount + 2);
+            for (var i = 0; i < oldCount; i++)
+                array[i] = existing[i];
+            array[oldCount] = new Il2CppSystem.Object(IL2CPP.ManagedStringToIl2Cpp(UpgradeParameter));
+            array[oldCount + 1] = BoxFloat(SuppressedUpgradeValue);
+
+            var args = (object[])__args.Clone();
+            args[3] = array;
+            _reissuing = true;
+            try
+            {
+                __originalMethod.Invoke(null, args);
+            }
+            finally
+            {
+                _reissuing = false;
+            }
+            return false;
+        }
+        catch (Exception e)
+        {
+            if (!_loggedParamError)
+            {
+                _loggedParamError = true;
+                RLog.Error($"Suppressor audio: could not play suppressed shot: {(e.InnerException ?? e).Message}");
+            }
+            return true;
+        }
+    }
+
+    private static Il2CppSystem.Object BoxFloat(float value)
+    {
+        object single = new Il2CppSystem.Single();
+        typeof(Il2CppSystem.Single).GetField("m_value", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)?.SetValue(single, value);
+        return ((Il2CppSystem.Single)single).BoxIl2CppObject();
+    }
+
+    private static string Describe(Il2CppSystem.Object o)
+    {
+        if (o == null)
+            return "null";
+        try
+        {
+            return $"{o.GetIl2CppType().Name}:{o.ToString()}";
+        }
+        catch
+        {
+            return "?";
+        }
+    }
+
+    private static void SetSuppressor(RangedWeaponController rifle, bool on)
+    {
+        var weapon = rifle._rangedWeapon;
+        var mods = weapon ? weapon._weaponMods : null;
+        if (!mods)
+        {
+            Say("Suppressor: rifle has no WeaponMods");
+            return;
+        }
+
+        var mod = FindSuppressorMod();
+        if (!mod)
+        {
+            Say("Suppressor: pistol suppressor mod is not loaded");
+            return;
+        }
+
+        if (on)
+        {
+            InstallAudioPatches();
+            if (!EnsureMuzzleSlot(rifle, mods))
+            {
+                Say("Suppressor: could not find the rifle muzzle");
+                return;
+            }
+
+            var applied = mods.HasMod(mod.ModItemId) || mods.ApplyMod(mod);
+            rifle._gunShotAudioEvent = SuppressedFireEvent;
+            RLog.Msg($"Suppressor on: applied={applied} slot={mod.AttachesToSlot} required={mod.RequiredSlot} item={mod.ModItemId}");
+            return;
+        }
+
+        if (mods.HasMod(mod.ModItemId))
+            mods.RemoveMod(mod);
+        if (_originalFireEvent != null)
+            rifle._gunShotAudioEvent = _originalFireEvent;
     }
 
     private static Transform FindProjectileTransform(RangedWeaponController rifle)
@@ -365,16 +668,97 @@ public class RifleScope : SonsMod
                 _hiddenCam = cam;
             }
 
+            if (Input.GetKeyDown(NightVisionKey))
+            {
+                _nightVision = !_nightVision;
+                Say($"Night vision {(_nightVision ? "on" : "off")}");
+            }
+            SetNightVision(_nightVision);
+
             SteerShot(cam);
             ShowOverlay(true, Range(cam), _debug ? DebugLine(cam) : null, _targetAimFov > 0f ? _targetAimFov : cam.fieldOfView);
             return;
         }
 
+        SetNightVision(false);
         RestoreShot();
         if (_hiddenCam)
             ShowHeld();
         _hiddenCam = null;
         ShowOverlay(false, -1f, null, 0f);
+    }
+
+    private static void SetNightVision(bool on)
+    {
+        if (!on)
+        {
+            if (_nvObject && _nvObject.activeSelf)
+                _nvObject.SetActive(false);
+            return;
+        }
+
+        if (!_nvObject && !CreateNightVision())
+            return;
+        if (!_nvObject.activeSelf)
+            _nvObject.SetActive(true);
+    }
+
+    private static bool CreateNightVision()
+    {
+        if (_nvFailed)
+            return false;
+
+        try
+        {
+            var layer = 0;
+            foreach (var v in Resources.FindObjectsOfTypeAll<Volume>())
+            {
+                if (v && v.isGlobal && v.gameObject.scene.IsValid())
+                {
+                    layer = v.gameObject.layer;
+                    break;
+                }
+            }
+
+            var profile = ScriptableObject.CreateInstance<VolumeProfile>();
+            profile.hideFlags = HideFlags.HideAndDontSave;
+
+            var exposure = profile.Add(Il2CppType.Of<Exposure>(), true).TryCast<Exposure>();
+            exposure.mode.Override(ExposureMode.Automatic);
+            exposure.adaptationMode.Override(AdaptationMode.Fixed);
+            exposure.limitMin.Override(-10f);
+            exposure.limitMax.Override(20f);
+            exposure.compensation.Override(1.5f);
+
+            var color = profile.Add(Il2CppType.Of<ColorAdjustments>(), true).TryCast<ColorAdjustments>();
+            color.saturation.Override(-100f);
+            color.colorFilter.Override(new Color(0.35f, 1f, 0.35f, 1f));
+            color.contrast.Override(25f);
+
+            var grain = profile.Add(Il2CppType.Of<FilmGrain>(), true).TryCast<FilmGrain>();
+            grain.type.Override(FilmGrainLookup.Medium3);
+            grain.intensity.Override(0.6f);
+            grain.response.Override(0.6f);
+
+            _nvObject = new GameObject("RifleScopeNightVision");
+            _nvObject.hideFlags = HideFlags.HideAndDontSave;
+            _nvObject.layer = layer;
+            UnityEngine.Object.DontDestroyOnLoad(_nvObject);
+            _nvObject.SetActive(false);
+
+            var volume = _nvObject.AddComponent<Volume>();
+            volume.isGlobal = true;
+            volume.priority = 10000f;
+            volume.weight = 1f;
+            volume.sharedProfile = profile;
+            return true;
+        }
+        catch (Exception e)
+        {
+            _nvFailed = true;
+            RLog.Error($"RifleScope could not create night vision: {e.Message}");
+            return false;
+        }
     }
 
     private static void ShowHeld()
@@ -703,6 +1087,24 @@ public class RifleScope : SonsMod
         Say($"RifleScope is {(_enabled ? "on" : "off")}. Usage: scope on or scope off");
     }
 
+    [DebugCommand("suppressor")]
+    private static void SuppressorCommand(string args)
+    {
+        args = (args ?? string.Empty).Trim().ToLowerInvariant();
+
+        if (args != "on" && args != "off")
+        {
+            Say($"Rifle suppressor is {(_suppressor ? "on" : "off")}. Usage: suppressor on or suppressor off");
+            return;
+        }
+
+        _suppressor = args == "on";
+        Save();
+        if (_rifle)
+            SetSuppressor(_rifle, _suppressor);
+        Say($"Rifle suppressor {(_suppressor ? "on" : "off")}");
+    }
+
     [DebugCommand("scopezoom")]
     private static void ScopeZoomCommand(string args)
     {
@@ -805,6 +1207,8 @@ public class RifleScope : SonsMod
                 _windCm = wind;
             if (parts.Length > 3)
                 _enabled = parts[3] != "0";
+            if (parts.Length > 4)
+                _suppressor = parts[4] == "1";
         }
         catch (Exception e)
         {
@@ -816,7 +1220,7 @@ public class RifleScope : SonsMod
     {
         try
         {
-            File.WriteAllText(_configPath, $"{_zoom.ToString(Inv)} {_trimCm.ToString(Inv)} {_windCm.ToString(Inv)} {(_enabled ? "1" : "0")}");
+            File.WriteAllText(_configPath, $"{_zoom.ToString(Inv)} {_trimCm.ToString(Inv)} {_windCm.ToString(Inv)} {(_enabled ? "1" : "0")} {(_suppressor ? "1" : "0")}");
         }
         catch (Exception e)
         {
