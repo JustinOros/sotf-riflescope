@@ -33,6 +33,7 @@ public class RifleScope : SonsMod
     private const float MaxWindCm = 200f;
     private const float TrimReferenceRange = 50f;
     private const KeyCode NightVisionKey = KeyCode.N;
+    private static readonly Color PhosphorTint = new(0.82f, 1f, 0.94f, 1f);
     private const string SuppressorModName = "CompactPistolSuppressorMod";
     private const string SuppressedFireEvent = "event:/SotF Events/player sounds/Weapons/PistolTactical/PistolTacticalFire";
     private const string MuzzleName = "RifleScopeMuzzle";
@@ -728,16 +729,19 @@ public class RifleScope : SonsMod
             exposure.adaptationMode.Override(AdaptationMode.Fixed);
             exposure.limitMin.Override(-10f);
             exposure.limitMax.Override(20f);
-            exposure.compensation.Override(1.5f);
+            exposure.compensation.Override(2f);
 
             var color = profile.Add(Il2CppType.Of<ColorAdjustments>(), true).TryCast<ColorAdjustments>();
-            color.saturation.Override(-100f);
-            color.colorFilter.Override(new Color(0.35f, 1f, 0.35f, 1f));
-            color.contrast.Override(25f);
+            color.contrast.Override(-5f);
+
+            var mixer = profile.Add(Il2CppType.Of<ChannelMixer>(), true).TryCast<ChannelMixer>();
+            SetMixerRow(mixer.redOutRedIn, mixer.redOutGreenIn, mixer.redOutBlueIn, PhosphorTint.r);
+            SetMixerRow(mixer.greenOutRedIn, mixer.greenOutGreenIn, mixer.greenOutBlueIn, PhosphorTint.g);
+            SetMixerRow(mixer.blueOutRedIn, mixer.blueOutGreenIn, mixer.blueOutBlueIn, PhosphorTint.b);
 
             var grain = profile.Add(Il2CppType.Of<FilmGrain>(), true).TryCast<FilmGrain>();
             grain.type.Override(FilmGrainLookup.Medium3);
-            grain.intensity.Override(0.6f);
+            grain.intensity.Override(0.45f);
             grain.response.Override(0.6f);
 
             _nvObject = new GameObject("RifleScopeNightVision");
@@ -759,6 +763,13 @@ public class RifleScope : SonsMod
             RLog.Error($"RifleScope could not create night vision: {e.Message}");
             return false;
         }
+    }
+
+    private static void SetMixerRow(ClampedFloatParameter fromRed, ClampedFloatParameter fromGreen, ClampedFloatParameter fromBlue, float tint)
+    {
+        fromRed.Override(30f * tint);
+        fromGreen.Override(59f * tint);
+        fromBlue.Override(11f * tint);
     }
 
     private static void ShowHeld()
